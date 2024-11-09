@@ -95,7 +95,7 @@ def create_subject(username, full_name, email, pub_key_path):
             public_key
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (username, full_name, email, role_new, role_down, role_up, role_mod, public_key)
+        (username, full_name, email, False, False, False, False, pub_key)
     )
 
     # Retrieve the subject's ID
