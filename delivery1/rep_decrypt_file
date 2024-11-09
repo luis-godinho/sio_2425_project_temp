@@ -1,1 +1,52 @@
 #!/usr/bin/python3
+
+import json
+import sys
+from cryptography.hazmat.primitives import hashes, hmac
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+
+def rep_decrypt_file(encrypted_file_path, metadata_file_path):
+    with open(metadata_file_path, 'r') as metadata_file:
+        metadata = json.load(metadata_file)
+    
+    encryption_algorithm = metadata.get("algorithm")
+    encryption_key = bytes.fromhex(metadata.get("key"))
+    iv = bytes.fromhex(metadata.get("iv"))
+    hmac_key = bytes.fromhex(metadata.get("hmac_key"))
+    hmac_value = bytes.fromhex(metadata.get("hmac"))
+
+    if encryption_algorithm != "AES":
+        raise ValueError("Unsupported encryption algorithm specified in metadata")
+
+    with open(encrypted_file_path, 'rb') as encrypted_file:
+        encrypted_data = encrypted_file.read()
+
+    h = hmac.HMAC(hmac_key, hashes.SHA256(), backend=default_backend())
+    h.update(encrypted_data)
+    try:
+        h.verify(hmac_value)
+        print("Integrity check passed.")
+    except Exception as e:
+        print("Integrity check failed.")
+        sys.exit(1)
+
+    cipher = Cipher(algorithms.AES(encryption_key), modes.CBC(iv))
+    decryptor = cipher.decryptor()
+    padded_plaintext = decryptor.update(encrypted_data) + decryptor.finalize()
+
+    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+    plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
+
+    print(plaintext.decode())
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: rep_decrypt_file <encrypted file> <encryption metadata>")
+        sys.exit(1)
+    
+    encrypted_file_path = sys.argv[1]
+    metadata_file_path = sys.argv[2]
+    
+    rep_decrypt_file(encrypted_file_path, metadata_file_path)
