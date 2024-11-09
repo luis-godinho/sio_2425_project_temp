@@ -18,7 +18,7 @@ class Subject(NamedTuple):
     role_mod: bool
     public_key: str
 
-class Document(NamedTuple):
+class Metadata(NamedTuple):
     document_id: int
     document_handle: int
     name: str
@@ -27,14 +27,10 @@ class Document(NamedTuple):
     file_handle: str
     organization_id: int
     deleter_id: int
-
-class file(NamedTuple):
-    file_id:int
-    file_handle: str
-    alg: str
     key: str
+    alg: str
 
-class acl(NamedTuple):
+class Acl(NamedTuple):
     acl_id: int
     document_id: int
     organization_id: int
