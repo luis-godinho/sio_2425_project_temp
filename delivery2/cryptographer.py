@@ -7,41 +7,71 @@ import time
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, hmac, padding
 from cryptography.hazmat.primitives.asymmetric import padding as as_padding
+from cryptography.hazmat.primitives.asymmetric import padding as sym_padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 KEY = "hObYhjwuydkwodwhaiJWiwdaoadIjdAI".encode("UTF-8")
 
 
-def encrypt_password(password):
-    iv = os.urandom(16)
+# def encrypt_password(password):
+#     iv = os.urandom(16)
+#
+#     cipher = Cipher(algorithms.AES(KEY), modes.CBC(iv), backend=default_backend())
+#
+#     padder = padding.PKCS7(algorithms.AES.block_size).padder()
+#     padded_password = padder.update(password.encode()) + padder.finalize()
+#
+#     encryptor = cipher.encryptor()
+#     encrypted_password = encryptor.update(padded_password) + encryptor.finalize()
+#
+#     return base64.b64encode(iv + encrypted_password).decode()
+#
+#
+# def decrypt_password(encrypted_password):
+#     encrypted_data = base64.b64decode(encrypted_password)
+#
+#     iv = encrypted_data[:16]
+#     ciphertext = encrypted_data[16:]
+#
+#     cipher = Cipher(algorithms.AES(KEY), modes.CBC(iv), backend=default_backend())
+#
+#     decryptor = cipher.decryptor()
+#     padded_password = decryptor.update(ciphertext) + decryptor.finalize()
+#
+#     unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+#     password = unpadder.update(padded_password) + unpadder.finalize()
+#
+#     return password.decode()
+#
 
-    cipher = Cipher(algorithms.AES(KEY), modes.CBC(iv), backend=default_backend())
 
-    padder = padding.PKCS7(algorithms.AES.block_size).padder()
-    padded_password = padder.update(password.encode()) + padder.finalize()
+def sign_message(message, private_key):
+    signature = private_key.sign(
+        message,
+        sym_padding.PSS(
+            mgf=sym_padding.MGF1(hashes.SHA256()),
+            salt_length=sym_padding.PSS.MAX_LENGTH,
+        ),
+        hashes.SHA256(),
+    )
+    return signature
 
-    encryptor = cipher.encryptor()
-    encrypted_password = encryptor.update(padded_password) + encryptor.finalize()
 
-    return base64.b64encode(iv + encrypted_password).decode()
-
-
-def decrypt_password(encrypted_password):
-    encrypted_data = base64.b64decode(encrypted_password)
-
-    iv = encrypted_data[:16]
-    ciphertext = encrypted_data[16:]
-
-    cipher = Cipher(algorithms.AES(KEY), modes.CBC(iv), backend=default_backend())
-
-    decryptor = cipher.decryptor()
-    padded_password = decryptor.update(ciphertext) + decryptor.finalize()
-
-    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
-    password = unpadder.update(padded_password) + unpadder.finalize()
-
-    return password.decode()
+def verify_signature(message, signature, public_key):
+    try:
+        public_key.verify(
+            signature,
+            message,
+            sym_padding.PSS(
+                mgf=sym_padding.MGF1(hashes.SHA256()),
+                salt_length=sym_padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return True
+    except:
+        return False
 
 
 def alg_encryption(alg: dict):
@@ -200,7 +230,7 @@ def decrypt(encrypted_data: bytes, wrapped_key: bytes, alg: bytes):
     return content
 
 
-def encrypt_json(data, public_key):
+def encrypt_json_asym(data, public_key):
     json_data = json.dumps(data).encode("utf-8")
 
     checksum = hashlib.sha256(json_data).hexdigest()
@@ -239,7 +269,7 @@ def encrypt_json(data, public_key):
     return encrypted_chunks
 
 
-def decrypt_json(encrypted_chunks, private_key, time_threshold=30):
+def decrypt_json_asym(encrypted_chunks, private_key, time_threshold=30):
     # print(type(encrypted_chunks))
     decrypted_payload = b""
     for encrypted_chunk in encrypted_chunks:
@@ -269,3 +299,60 @@ def decrypt_json(encrypted_chunks, private_key, time_threshold=30):
 
     # Return the original data if all checks pass
     return json.loads(data)
+
+
+def encrypt_json_sym(data, symmetric_key):
+    json_data = json.dumps(data).encode("utf-8")
+    checksum = hashlib.sha256(json_data).hexdigest()
+    timestamp = int(time.time())
+
+    # Prepare the payload
+    payload = {
+        "data": json_data.decode(),
+        "checksum": checksum,
+        "timestamp": timestamp,
+    }
+    payload_bytes = json.dumps(payload).encode("utf-8")
+
+    # Generate an IV (Initialization Vector)
+    iv = os.urandom(16)
+
+    # Create AES-CBC cipher
+    cipher = Cipher(algorithms.AES(symmetric_key), modes.CBC(iv))
+    encryptor = cipher.encryptor()
+
+    # Pad the payload to make it compatible with AES block size (16 bytes)
+    padder = padding.PKCS7(128).padder()
+    padded_payload = padder.update(payload_bytes) + padder.finalize()
+
+    # Encrypt the padded payload
+    encrypted_payload = encryptor.update(padded_payload) + encryptor.finalize()
+
+    # Encode the encrypted payload and IV as base64 for transmission
+    message = base64.b64encode(iv + encrypted_payload).decode("utf-8")
+
+    return message
+
+
+def decrypt_json_sym(encrypted_data, symmetric_key):
+    data = base64.b64decode(encrypted_data)
+
+    iv = data[:16]
+    ciphertext = data[16:]
+
+    # Create AES-CBC cipher
+    cipher = Cipher(algorithms.AES(symmetric_key), modes.CBC(iv))
+    decryptor = cipher.decryptor()
+
+    # Decrypt the ciphertext
+    padded_payload = decryptor.update(ciphertext) + decryptor.finalize()
+
+    # Remove padding
+    unpadder = padding.PKCS7(128).unpadder()
+    plaintext_bytes = unpadder.update(padded_payload) + unpadder.finalize()
+
+    # Convert the plaintext bytes back into the original payload (JSON format)
+    plaintext = plaintext_bytes.decode("utf-8")
+    payload = json.loads(plaintext)
+
+    return payload

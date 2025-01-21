@@ -1,6 +1,5 @@
 import argparse
 import base64
-import getpass
 import json
 import os
 from urllib.parse import quote
@@ -12,7 +11,14 @@ from cryptography.hazmat.primitives.asymmetric import dh, rsa
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-from cryptographer import decrypt, decrypt_json, encrypt_json
+from cryptographer import (
+    decrypt,
+    decrypt_json_asym,
+    decrypt_json_sym,
+    encrypt_json_asym,
+    encrypt_json_sym,
+    sign_message,
+)
 
 try:
     with open("../RepoKeys/Repo.pem.pub", "r") as f:
@@ -41,27 +47,29 @@ def get_session_info(session_file):
     with open(session_file, "r") as s_file:
         session = s_file.read()
         session_data = json.loads(session)
-        session_info = {
-            "id": session_data["session_id"],
-        }
         password = session_data["password"]
         private_key_path = session_data["private_key_path"]
         private_key = get_private_key(private_key_path, password)
-        return session_info, private_key
+        session_info = {
+            "id": session_data["session_id"],
+            "signature": sign_message("mississipi", private_key),
+        }
+        shared_secret = session_data["shared_secret"]
+        return session_info, shared_secret
 
 
-def url_encode(data):
-    data_encrypted = encrypt_json(data, REP_PUB_KEY)
+def url_encode(data, shared_secret):
+    data_encrypted = encrypt_json_sym(data, shared_secret)
     encoded_message = quote(data_encrypted[0].encode())
 
     return encoded_message
 
 
-def get_message_code(res, private_key=None):
+def get_message_code(res, shared_secret=None):
     response, code = res
     try:
-        if private_key:
-            response, code = (decrypt_json(res[0], private_key), res[1])
+        if shared_secret:
+            response, code = (decrypt_json_sym(res[0], shared_secret), res[1])
     except:
         print(res)
         return -1
@@ -189,12 +197,6 @@ def rep_create_session(organization, username, password, credential_file, sessio
     client_private_key = parameters.generate_private_key()
     client_public_key = client_private_key.public_key()
 
-    # Serialize the client's public key
-    client_public_key_bytes = client_public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-
     numbers = parameters.parameter_numbers()
 
     data = {
@@ -208,7 +210,7 @@ def rep_create_session(organization, username, password, credential_file, sessio
         },
     }
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_asym(data, REP_PUB_KEY)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/session/create", json=json.dumps(message)
@@ -216,12 +218,11 @@ def rep_create_session(organization, username, password, credential_file, sessio
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
-    if message == -1:
+    message, code = (decrypt_json_asym(res[0], private_key), res[1])
+    if code >= 400:
         return -1
-    res = message
 
-    y = res.get("y")
+    y = message.get("y")
 
     server_public_key = dh.DHPublicNumbers(y, numbers).public_key()
 
@@ -331,19 +332,19 @@ def rep_list_roles(session_file, role):
 
 
 def rep_list_subjects(session_file, username=None):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    encoded_session = url_encode(session_info)
+    encoded_session = url_encode(session_info, shared_key)
 
     url = f"http://{REP_ADDRESS}/subject/list?session={encoded_session}"
     if username:
-        encoded_username = url_encode(username)
+        encoded_username = url_encode(username, shared_key)
         url += f"&username={encoded_username}"
     response = requests.get(url)
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -356,10 +357,10 @@ def rep_list_subjects(session_file, username=None):
 
 
 def rep_list_role_subjects(session_file, role):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    session_encoded = url_encode(session_info)
-    role_encoded = url_encode(role)
+    session_encoded = url_encode(session_info, shared_key)
+    role_encoded = url_encode(role, shared_key)
 
     url = f"http://{REP_ADDRESS}/role/subject?session={session_encoded}&role={role_encoded}"
 
@@ -367,7 +368,7 @@ def rep_list_role_subjects(session_file, role):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -378,17 +379,17 @@ def rep_list_role_subjects(session_file, role):
 
 
 def rep_list_subject_roles(session_file, username):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    session_encoded = url_encode(session_info)
-    role_encoded = url_encode(username)
+    session_encoded = url_encode(session_info, shared_key)
+    role_encoded = url_encode(username, shared_key)
 
     url = f"http://{REP_ADDRESS}/subject/role?session={session_encoded}&subject={role_encoded}"
     response = requests.get(url)
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -399,17 +400,17 @@ def rep_list_subject_roles(session_file, username):
 
 
 def rep_list_role_permissions(session_file, role):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    session_encoded = url_encode(session_info)
-    role_encoded = url_encode(role)
+    session_encoded = url_encode(session_info, shared_key)
+    role_encoded = url_encode(role, shared_key)
     url = f"http://{REP_ADDRESS}/role/permission?session={session_encoded}&role={role_encoded}"
 
     response = requests.get(url)
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -420,10 +421,10 @@ def rep_list_role_permissions(session_file, role):
 
 
 def rep_list_permission_roles(session_file, permission):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    session_encoded = url_encode(session_info)
-    permission_encoded = url_encode(permission)
+    session_encoded = url_encode(session_info, shared_key)
+    permission_encoded = url_encode(permission, shared_key)
 
     response = requests.get(
         f"http://{REP_ADDRESS}/permission/roles?session={session_encoded}&permission={permission_encoded}"
@@ -431,7 +432,7 @@ def rep_list_permission_roles(session_file, permission):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -442,23 +443,23 @@ def rep_list_permission_roles(session_file, permission):
 
 
 def rep_list_docs(session_file, username=None, date=None):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    encoded_session = url_encode(session_info)
+    encoded_session = url_encode(session_info, shared_key)
 
     url = f"http://{REP_ADDRESS}/document/list?session={encoded_session}"
     if username:
-        username_encoded = url_encode(username)
+        username_encoded = url_encode(username, shared_key)
         url += f"&username={username_encoded}"
     if date:
-        date_encoded = url_encode(date)
+        date_encoded = url_encode(date, shared_key)
         url += f"&date={date_encoded}"
 
     response = requests.get(url)
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -472,7 +473,7 @@ def rep_list_docs(session_file, username=None, date=None):
 
 
 def rep_add_subject(session_file, username, name, email, credential_file):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     with open(credential_file, "r") as file:
         public_key = file.read()
@@ -485,7 +486,7 @@ def rep_add_subject(session_file, username, name, email, credential_file):
         "public_key": public_key,
     }
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/subject/add", json=json.dumps(message)
@@ -493,7 +494,7 @@ def rep_add_subject(session_file, username, name, email, credential_file):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -502,11 +503,11 @@ def rep_add_subject(session_file, username, name, email, credential_file):
 
 
 def rep_suspend_subject(session_file, username):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "username": username}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/subject/suspend", json=json.dumps(message)
@@ -514,7 +515,7 @@ def rep_suspend_subject(session_file, username):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -523,11 +524,11 @@ def rep_suspend_subject(session_file, username):
 
 
 def rep_activate_subject(session_file, username):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "username": username}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/subject/activate", json=json.dumps(message)
@@ -535,7 +536,7 @@ def rep_activate_subject(session_file, username):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -544,11 +545,11 @@ def rep_activate_subject(session_file, username):
 
 
 def rep_add_role(session_file, role):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "role": role}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response_encrypted = requests.post(
         f"http://{REP_ADDRESS}/role/add", json=json.dumps(message)
@@ -556,7 +557,7 @@ def rep_add_role(session_file, role):
 
     res = json.loads(response_encrypted.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -565,11 +566,11 @@ def rep_add_role(session_file, role):
 
 
 def rep_suspend_role(session_file, role):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "role": role}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/role/suspend", json=json.dumps(message)
@@ -577,7 +578,7 @@ def rep_suspend_role(session_file, role):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -586,11 +587,11 @@ def rep_suspend_role(session_file, role):
 
 
 def rep_reactivate_role(session_file, role):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "role": role}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/role/activate", json=json.dumps(message)
@@ -598,7 +599,7 @@ def rep_reactivate_role(session_file, role):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -607,11 +608,11 @@ def rep_reactivate_role(session_file, role):
 
 
 def rep_add_permission(session_file, role, username_or_permission):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "role": role, "perm": username_or_permission}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/permission/add", json=json.dumps(message)
@@ -619,7 +620,7 @@ def rep_add_permission(session_file, role, username_or_permission):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -628,11 +629,11 @@ def rep_add_permission(session_file, role, username_or_permission):
 
 
 def rep_remove_permission(session_file, role, username_or_permission):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "role": role, "perm": username_or_permission}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/permission/remove", json=json.dumps(message)
@@ -640,7 +641,7 @@ def rep_remove_permission(session_file, role, username_or_permission):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -649,14 +650,14 @@ def rep_remove_permission(session_file, role, username_or_permission):
 
 
 def rep_add_doc(session_file, document_name, file):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     with open(file, "r") as doc:
         file_content = doc.read()
 
     data = {"session": session_info, "doc_name": document_name, "file": file_content}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/document/add", json=json.dumps(message)
@@ -664,7 +665,7 @@ def rep_add_doc(session_file, document_name, file):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -673,10 +674,10 @@ def rep_add_doc(session_file, document_name, file):
 
 
 def rep_get_doc_metadata(session_file, document_name):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    encoded_session = url_encode(session_info)
-    encoded_doc = url_encode(document_name)
+    encoded_session = url_encode(session_info, shared_key)
+    encoded_doc = url_encode(document_name, shared_key)
 
     response = requests.get(
         f"http://{REP_ADDRESS}/document/metadata?session={encoded_session}&doc_name={encoded_doc}"
@@ -684,7 +685,7 @@ def rep_get_doc_metadata(session_file, document_name):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -693,10 +694,10 @@ def rep_get_doc_metadata(session_file, document_name):
 
 
 def rep_get_doc_file(session_file, document_name, file=None):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
-    encoded_session = url_encode(session_info)
-    encoded_doc = url_encode(document_name)
+    encoded_session = url_encode(session_info, shared_key)
+    encoded_doc = url_encode(document_name, shared_key)
 
     response = requests.get(
         f"http://{REP_ADDRESS}/document/getfile?session={encoded_session}&doc_name={encoded_doc}"
@@ -704,7 +705,7 @@ def rep_get_doc_file(session_file, document_name, file=None):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -718,11 +719,11 @@ def rep_get_doc_file(session_file, document_name, file=None):
 
 
 def rep_delete_doc(session_file, document_name):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {"session": session_info, "doc_name": document_name}
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/document/delete", json=json.dumps(message)
@@ -730,7 +731,7 @@ def rep_delete_doc(session_file, document_name):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 
@@ -739,7 +740,7 @@ def rep_delete_doc(session_file, document_name):
 
 
 def rep_acl_doc(session_file, document_name, operation, role, permission):
-    session_info, private_key = get_session_info(session_file)
+    session_info, shared_key = get_session_info(session_file)
 
     data = {
         "session": session_info,
@@ -749,7 +750,7 @@ def rep_acl_doc(session_file, document_name, operation, role, permission):
         "perm": permission,
     }
 
-    message = encrypt_json(data, REP_PUB_KEY)
+    message = encrypt_json_sym(data, shared_key)
 
     response = requests.post(
         f"http://{REP_ADDRESS}/document/acl", json=json.dumps(message)
@@ -757,7 +758,7 @@ def rep_acl_doc(session_file, document_name, operation, role, permission):
 
     res = json.loads(response.content.decode())
 
-    message = get_message_code(res, private_key)
+    message = get_message_code(res, shared_key)
     if message == -1:
         return -1
 

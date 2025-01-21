@@ -13,9 +13,9 @@ from flask import Flask, jsonify, request
 from .classes import *
 from .cryptographer import (
     decrypt,
-    decrypt_json,
+    decrypt_json_asym,
     encrypt,
-    encrypt_json,
+    encrypt_json_asym,
 )
 from .database import db
 
@@ -49,7 +49,8 @@ def create_organization():
     session = db.session()
 
     data_encrypted = json.loads(request.get_json())
-    data = decrypt_json(data_encrypted, PRIVATE_KEY)
+    # WARN: decide later
+    data = decrypt_json_asym(data_encrypted, PRIVATE_KEY)
 
     org_name = data.get("organization")
     username = data.get("username")
@@ -141,7 +142,7 @@ def org_list():
 def create_session():
     data_encrypted = json.loads(request.get_json())
 
-    data = decrypt_json(data_encrypted, PRIVATE_KEY)
+    data = decrypt_json_asym(data_encrypted, PRIVATE_KEY)
 
     organization_name = data.get("organization")
     username = data.get("username")
@@ -193,7 +194,7 @@ def create_session():
         print(f"An error occurred: {e}")
         return jsonify({"error": "Could not create the session"}, 400)
 
-    message = encrypt_json(
+    message = encrypt_json_asym(
         {
             "session_id": session.session_id,
             "subject_id": session.subject_id,
