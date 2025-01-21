@@ -1,0 +1,3 @@
+#!/bin/bash
+
+python3 ../commands.py rep_activate_subject "$1" "$2"
