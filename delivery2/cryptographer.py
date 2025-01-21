@@ -45,6 +45,7 @@ def decrypt_password(encrypted_password):
 
 
 def alg_encryption(alg: dict):
+    # WARN: change ECB to CBC
     serialized_alg = json.dumps(alg).encode("utf-8")
     cipher_alg = Cipher(algorithms.AES(KEY), modes.ECB(), backend=default_backend())
     encryptor_alg = cipher_alg.encryptor()
@@ -54,6 +55,7 @@ def alg_encryption(alg: dict):
 
 
 def decrypt_alg(encrypted_alg: bytes):
+    # WARN: change ECB to CBC
     cipher_alg = Cipher(algorithms.AES(KEY), modes.ECB(), backend=default_backend())
     decryptor_alg = cipher_alg.decryptor()
 

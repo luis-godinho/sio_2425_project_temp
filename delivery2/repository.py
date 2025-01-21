@@ -1,21 +1,23 @@
 import base64
+import json
 from getpass import getpass
+from urllib.parse import unquote
 
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import dh
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from flask import Flask, jsonify, request
+
 from .classes import *
-from .database import db
 from .cryptographer import (
     decrypt,
     decrypt_json,
-    decrypt_password,
     encrypt,
     encrypt_json,
-    encrypt_password,
 )
-from flask import Flask, request, jsonify
-import json
-from urllib.parse import unquote
+from .database import db
 
 app = Flask(__name__)
 
@@ -143,8 +145,8 @@ def create_session():
 
     organization_name = data.get("organization")
     username = data.get("username")
-    password = data.get("password")
-    creds = data.get("creds")
+    rsa_public_key = data.get("rsa_public_key")
+    dh_parameters = data.get("dh_parameters")
 
     subject = Subject.query.filter_by(username=username).first()
 
@@ -156,11 +158,29 @@ def create_session():
     if org is None:
         return jsonify({"error": "Organization does not exist"}, 400)
 
+    parameters = dh.DHParameterNumbers(
+        dh_parameters["p"], dh_parameters["g"]
+    ).parameters()
+
+    server_private_key = parameters.generate_private_key()
+    peer_public_key = dh.DHPublicNumbers(
+        dh_parameters["y"], parameters.parameter_numbers()
+    ).public_key()
+
+    shared_secret = server_private_key.exchange(peer_public_key)
+
+    symmetric_key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"diffie-hellman-key-exchange",
+    ).derive(shared_secret)
+
     session = Session()
     session.subject_id = subject.subject_id
     session.org_id = org.org_id
-    session.keys = creds
-    session.password = encrypt_password(password)
+    session.keys = rsa_public_key
+    session.password = base64.b64encode(symmetric_key).decode()  # Shared Secret
 
     db_session = db.session()
 
@@ -178,11 +198,17 @@ def create_session():
             "session_id": session.session_id,
             "subject_id": session.subject_id,
             "org_id": session.org_id,
-            "keys": session.keys,
+            "y": server_private_key.public_key()
+            .public_numbers()
+            .y,  # info about server dh_public_key
             "created_at": session.created_at.isoformat(),
         },
         session.keys,
     )
+
+    # print(
+    #     f"shared_secret: {base64.b64encode(shared_secret).decode()}; symmetric_key: {base64.b64encode(symmetric_key).decode()}"
+    # )
 
     return jsonify(
         message,

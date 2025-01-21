@@ -7,8 +7,9 @@ from urllib.parse import quote
 
 import requests
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import dh, rsa
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from cryptographer import decrypt, decrypt_json, encrypt_json
@@ -22,12 +23,10 @@ except:
 REP_ADDRESS = "127.0.0.1:5000"
 
 
-def get_private_key(private_key_path):
+def get_private_key(private_key_path, password):
     with open(private_key_path, "rb") as key_file:
         pem_data = key_file.read()
 
-        while (password := getpass.getpass("private key password: ")) == "":
-            continue
         try:
             private_key = load_pem_private_key(
                 pem_data, password=password.encode(), backend=default_backend()
@@ -42,9 +41,12 @@ def get_session_info(session_file):
     with open(session_file, "r") as s_file:
         session = s_file.read()
         session_data = json.loads(session)
-        session_info = {"id": session_data["session_id"], "password": session_data["password"]}
+        session_info = {
+            "id": session_data["session_id"],
+        }
+        password = session_data["password"]
         private_key_path = session_data["private_key_path"]
-        private_key = get_private_key(private_key_path)
+        private_key = get_private_key(private_key_path, password)
         return session_info, private_key
 
 
@@ -59,10 +61,7 @@ def get_message_code(res, private_key=None):
     response, code = res
     try:
         if private_key:
-            response, code = (
-                decrypt_json(res[0], private_key),
-                res[1]
-            )
+            response, code = (decrypt_json(res[0], private_key), res[1])
     except:
         print(res)
         return -1
@@ -184,13 +183,29 @@ def rep_create_session(organization, username, password, credential_file, sessio
     with open(credential_file, "r") as file:
         public_key = file.read()
 
-    private_key = get_private_key(credential_file.replace(".pub", ""))
+    private_key = get_private_key(credential_file.replace(".pub", ""), password)
+
+    parameters = dh.generate_parameters(generator=2, key_size=2048)
+    client_private_key = parameters.generate_private_key()
+    client_public_key = client_private_key.public_key()
+
+    # Serialize the client's public key
+    client_public_key_bytes = client_public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    numbers = parameters.parameter_numbers()
 
     data = {
         "organization": organization,
         "username": username,
-        "password": password,
-        "creds": public_key,
+        "rsa_public_key": public_key,
+        "dh_parameters": {
+            "p": numbers.p,
+            "y": client_public_key.public_numbers().y,
+            "g": numbers.g,
+        },
     }
 
     message = encrypt_json(data, REP_PUB_KEY)
@@ -204,10 +219,30 @@ def rep_create_session(organization, username, password, credential_file, sessio
     message = get_message_code(res, private_key)
     if message == -1:
         return -1
+    res = message
+
+    y = res.get("y")
+
+    server_public_key = dh.DHPublicNumbers(y, numbers).public_key()
+
+    shared_secret = client_private_key.exchange(server_public_key)
+
+    # Derive a symmetric key
+    symmetric_key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"diffie-hellman-key-exchange",
+    ).derive(shared_secret)
+
+    # print(
+    #     f"shared_secret: {base64.b64encode(shared_secret).decode()}; symmetric_key: {base64.b64encode(symmetric_key).decode()}"
+    # )
 
     with open(session_file, "w") as file:
         message["private_key_path"] = credential_file.replace(".pub", "")
         message["password"] = password
+        message["shared_key"] = symmetric_key
         file.write(json.dumps(message))
 
     return 0
@@ -974,7 +1009,9 @@ def main():
     parser_add_permission.add_argument(
         "session_file", type=str, help="Path to the session file"
     )
-    parser_add_permission.add_argument("role", type=str, help="Role that is being modified")
+    parser_add_permission.add_argument(
+        "role", type=str, help="Role that is being modified"
+    )
     parser_add_permission.add_argument(
         "username_or_permission", type=str, help="Permission name or username"
     )
